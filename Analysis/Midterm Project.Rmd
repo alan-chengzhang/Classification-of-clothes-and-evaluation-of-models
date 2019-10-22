@@ -1,0 +1,1077 @@
+---
+title: "Applied Data Science:  Midterm Project"
+author: "Fan Huang(fh2386), Xiaoxuan Liu(xl2787), Cheng Zhang(cz2532)"
+date: "3/6/2019"
+output:
+  prettydoc::html_pretty:
+  theme: cayman
+highlight: github
+---
+
+```{r setup, include=FALSE}
+set.seed(72)
+knitr::opts_chunk$set(echo = TRUE, comment="", warning = FALSE, message = FALSE, tidy.opts=list(width.cutoff=55))
+```
+
+```{r libraries, echo = FALSE}
+library(data.table)
+library(prettydoc)
+library(DT)
+library(MASS)
+library(randomForest)
+library(nnet)
+library(glmnet)
+library(xgboost)
+library(FNN)
+library(e1071)
+set.seed(72)
+```
+
+```{r source_files}
+setwd('~/Desktop')
+```
+Dear Professor and Grader:\
+Please note that all outputs are generate in the end. Therefore, for each function section, we don't provdie the test results so that we can have much faster running time. We would be proud of showing you our mideterm project. \
+sincerely \
+Fan Huang(fh2386), Xiaoxuan Liu(xl2787), Cheng Zhang(cz2532)
+```{r functions}
+# create a mulifucntion for lapply
+multifun<-function(data){
+  rbind(ldatest(data),lda.pca(data),ridge.pca(data),
+        logistic_fitting(data),randomForest_fitting(data),xgb_fitting(data),
+        svm_fitting(data),nn_fitting(data),knn_fitting(data),ensemble.fun(data))
+}
+
+
+#combine each output list
+dataframeM<-function(dat){
+  rbindlistt<-NULL
+ for(i in 1:3)
+ {
+   dat[[i]]$Data<-paste0("dat_",size0,"_",i) 
+   rbindlistt<-rbind(rbindlistt,dat[[i]])
+ }
+  return(rbindlistt)
+}
+
+
+
+#generate a outpout function with three diffrent sample size
+output.function<-function(v1,v2,v3){
+ dat<-rbind(generate.sample(v1),
+        generate.sample(v2),
+        generate.sample(v3))
+ 
+ dat<-dat[order(dat$Model),]
+ row.names(dat)<-NULL
+ round.fun<-function(num){
+   signif(num,4)
+ }
+dat[,4:7]<-apply(dat[,4:7],2,round.fun)
+dat<-datatable(dat)
+return(dat)
+}
+```
+
+
+```{r load_data}
+train.set<-fread(input='MNIST-fashion training set-49.csv')
+
+
+#dim(train.set) #60000 rows 50 columns
+test.set<-fread(input="MNIST-fashion testing set-49.csv")
+
+#test.set<-test.set[,by="label"]
+#dim(test.set)  #10000 rows 50 columns 
+classfication.names<-train.set[,.(unique(get('label')))] 
+classfication.names
+
+
+train.set[,1]<-train.set[,lapply(X=.SD,function(x) as.factor(x)),.SDcols='label']
+test.set[,1]<-test.set[,lapply(X=.SD,function(x) as.factor(x)),.SDcols='label']
+x.trian<-test.set[,-1]
+y.train<-test.set$label
+
+x.test<-test.set[,-1]
+y.test<-test.set[,1]
+
+```
+
+```{r clean_data}
+mean((apply(train.set,1,FUN = is.na)==TRUE)*1) #no na or missing value
+```
+
+```{r generate_samples}
+generate.sample<-function(size0)
+{
+  
+n<-seq_len(train.set[,.N])
+dat<-replicate(3,sample(n,size0,replace = F))
+list.set<-list(train.set[dat[,1],],train.set[dat[,2],],train.set[dat[,3],])
+names(list.set)<-c(paste0("dat_",size0,"_1",seq=""),
+                      paste0("dat_",size0,"_2",seq=""),
+                      paste0("dat_",size0,"_3",seq=""))
+}
+```
+
+## Introduction
+
+Nowadays, image recognition become a heated topic in machine learning and deep learning. Most people just care about the accuracy about those algorithms and try to optimize that. However, the running time of algorithms and the amount of data used to train the model are also very important.
+
+In this paper, we apply 9+1 machine learning algorithms, which are introduced in following sections, to predict different types of apparels using 7-by-7 pixel image. We not only care about the misclassification rate (denote as C), but also take running time (denote in B) and proportion of used data (denote as A) into account. The “point”, which is 0.25*A + 0.25*B + 0.5*C, is our goal to minimize for the optimization problem. Even though we have a training set of 60,000 rows, the model development sets, which are formed by sampling from the rows of the overall training data randomly without replacement, are 1000, 2000, and 3000 rows. It helps to do the optimization and show the advantages & disadvantage of some models, given that the dataset may not be large enough, which is always the real-world problem.
+
+We try to build a highly integrated model but with a simple user interface. A list of three sample size inputs, such as output.function(1000,2000,3000), will generate all test results. To achieve the goal, each of our team members will write three different models. We have to invent a structure that takes everyone’s model functions and run them through to generate the test results. After careful deliberation, we decide to use lapply function to replace the loop iteration function to optimizing our model's runing time. In the end, we combine to our three best models to form the ensemble model. 
+
+There is a discussion section at the end of this paper. We will talk about how the choice of points function impact the result, what may happen if we use large sample sizes and some concern about the training process for some models, what challenges we have encoutered and what findings that we really want to share. 
+
+### Model 1:  
+LDA
+
+When I choose the models for the midterm project, LDA is the model that comes to my mind immediately. It has been introduced in my machine class and also used widely for classification problem. It has the condition requiring responses classes to be separable and normal distributed. Our project fits the criterion very well.  
+
+Despite its simplicity comparing to other complexed models such as SVM (support vector machine) and random forest, it really does its job consistently and fast when I input a large sample training set. For example, 1000 sample size of training set can be run nearly 10 times faster than Neutral Network while maintain its accuracy, which can be attributed to its algorithm based on Bayes theorem. The error under 1000 sample size is below 25 percent, which meets my expectation as dealing with such small sample size. 
+         
+```{r code_model1_development, eval = TRUE}
+###########
+#LDA Model#
+###########
+
+ldatest<-function(dat){
+start_time <- Sys.time()
+lda.model<-lda(label~.,data=dat)
+
+#training.error<-mean((predict(lda.model)$class!=dat[,get('label')])*1)
+test.error<-mean((predict(lda.model,x.test)$class!=test.set[,get('label')])*1)
+end_time <- Sys.time()
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C<-test.error
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"LDA"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+
+```
+
+```{r load_model1}
+```
+
+### Model 2:  
+LDA with PCA
+
+Still, I want to push the accuracy into higher level. Another idea comes to my mind, PCA, a dimensional reduction technique to reduce dimensional space and correlation. I have noticed that the training set has 49-dimensional space. I use PCA function in R studio to test how many eigenvectors needed to explain the total variance. I find out that 36-dimensional space has already explained 99 percent the data. Then, I perform the SVD (Singular value decomposition) to extract the eigenmatrix with 36 column eigenvectors. I once again perform the LDA test with PCA. The accuracy has been improved few percent. I really satisfy the result. 
+
+While testing multi large sample training set such as 2000,3000 and 5000, I find its disadvantage that the accuracy maintain almost identical after sample size surpasses 3000. I soon realize that I may turn this disadvantage into an advantage. The third model, ridge regression with cross validation, which I will talk next, has really slow running time comparing to LDA but a higher accuracy. Balancing the running time and sample size while maintaining good accuracy is not easy task. Since the sample size cap is 3000 for LDA model, I could use 3000 sample size as cap size for another model that requires slow running time and small sample size. With 1000, 2000, and 3000 sample training set, the error meets the standard as below 0.25.
+
+```{r code_model2_development, eval = TRUE}
+####################
+#LDA with PCA Model#
+####################
+
+
+lda.pca<-function(dat,sta=1){
+  
+pca.train<-scale(dat[,-1],scale=FALSE)
+pca.test<-scale(test.set[,-1],scale=FALSE)
+
+#pca<-princomp(pca.train, cor = TRUE)
+#eg<-summary(pca)#take eigen as 36 #0.991058731 explain the data. 
+
+leading.pceigen<-svd(pca.train)$v[,1:36]
+pc.r.train<-pca.train %*%leading.pceigen
+pc.r.test<-pca.test%*%leading.pceigen
+
+start_time <- Sys.time()
+pca.lda.test<-lda(pc.r.train,dat[,get('label')])
+est.y<-predict(pca.lda.test,pc.r.test)$class
+end_time <- Sys.time()
+pca.test.error<-mean((est.y!=test.set[,get('label')])*1)
+
+
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C<-pca.test.error
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"LDA with PCA"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+
+ifelse(sta==1,return(res),return(est.y))
+
+}
+
+
+
+
+```
+
+```{r load_model2}
+
+```
+
+### Model 3:  
+Ridge regression 
+
+The struggle choosing between ridge regression and lasso really bothers me through the model selection and testifying period. I have looked up considerable amount papers to distinguish the two models. Ridge regression and lasso have different penalty parameters. They both prevent overfitting, but Lasso can turn coefficients to zero and help future selections. To me, the biggest problem to use Lasso is the running time and prediction error. Ridge regression just outperforms Lasso regarding the training set and test sets. For example, under 1000 sample size of training set, ridge regression runs less time and predict almost identical to Lasso. As a result, ridge regression is a better model to this project. 
+      
+Ridge regression also has its problem. Without cross validation, the prediction error is really high. To optimize the performance, I decide to use PCA and cross validation to bring down the error even though it sacrifices the running time. With sample size as 1000,2000,and 3000,  ridge regression performs slightly better than LDA according to the prediction error. I also try to constrain the lambda to improve its prediction. After comparing the difference with default lambda and manual lambda, constrained lambda in ridge regression model performs better. 
+
+
+```{r code_model3_development, eval = TRUE}
+############################################
+# ridge with cross validation and PCA Model#
+############################################
+
+
+ridge.pca<-function(dat){
+  
+lambdas <- 10^seq(3, -2, by = -.1)
+
+pca.train<-scale(dat[,-1],scale=FALSE)
+pca.test<-scale(test.set[,-1],scale=FALSE)
+
+#pca<-princomp(pca.train, cor = TRUE)
+#eg<-summary(pca)#take eigen as 36 #0.991058731 explain the data. 
+
+leading.pceigen<-svd(pca.train)$v[,1:36]
+ridge.train_x<-pca.train %*%leading.pceigen
+ridge.test_x<-pca.test%*%leading.pceigen
+
+start_time <- Sys.time()
+ridge.test<-cv.glmnet(ridge.train_x,dat[,get("label")],family="multinomial",alpha=0,standardize=TRUE,lambda = lambdas)
+
+
+pca.test.error<-mean((predict(ridge.test,ridge.test_x,type = 'class')!=test.set[,get('label')])*1)
+end_time<-Sys.time()
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C<-pca.test.error
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"Ridge regression with PCA"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+
+```
+
+```{r load_model3}
+
+```
+
+### Model 4
+Multinomial Logistic Regression  
+
+At beginning, the package used is “glmnet”, which is used to form a LASSO-logistics regression model. Therocially, with the penalized term, the accuracy is going to be better. However, because of the penalized term, it is not time efficiency, just a little bit better than the neural network model.So, the ordinary multinomial logistic regression model, from the nnet package is used.There is only one hyperparameters in this model. The family = "multinomial" correspond the the response are factors and we want to use a multinomial logistic regression to fit that.
+  
+Besides, there is a “s” in the prediction part of the model, which represent for the weight of penalized term of the model. It should be relatively small in order not to overfit the training set. I arbitrary set it to be s=0.001.According to the result, the misclassification rate of this model is higher than the LASSO-logistic model (not included in this report). But the running time is significantly lower, which leads to a much lower “points” 
+
+The misclassification rate is higher than many other models. It’s not a surprise because the advantage of regression model is not the accuracy. And without the penalized term, it cannot handle the multicollinearity in features. The advantages of this model are on the inference part, we can decide which pixels are more important for the prediction of types of apparel. If the misclassification rate is the only goal, it is not competitive comparing to other models.
+
+
+```{r code_model4_development, eval = TRUE}
+################
+#Logistic Model#
+################
+
+
+logistic_fitting <- function(dat) 
+{
+   xtest = test.set[, -1]
+   ytest = test.set[, get("label")]
+   formula = "label ~."
+  # Obtain Names of the training dataset
+  start_time <- Sys.time()
+  mod.logistic <- multinom(formula = formula, data = dat)
+
+  pred.logistic <- predict(object = mod.logistic, newdata = xtest)
+  end_time <- Sys.time()
+  # Obtain: Sample size from the Name of the training dataset
+  
+  samp_size<-nrow(dat)
+  A <- samp_size / nrow(train.set)
+  B <- min(1, (as.numeric(end_time-start_time) / 60))
+  C<- mean(pred.logistic != ytest)
+  dat_name<-NA
+  modelname<-"Logistic"
+  pt<-0.25*A+0.25*B+0.5*C
+ res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+  colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+
+```
+
+```{r load_model4}
+
+```
+
+### Model 5
+Randomforest
+
+Although decision tree is very fast which may lead to good points c, the misclassification rate is very unstable for it often overfitting the training set. In order to avoid that, the random forest model, which is constructed by a multitude of decision trees, is used to for this prediction.
+
+There are two hyperparameters in the random forest model. The first one is “ntree”. it represents the number of trees to growth. This should not be set to too small a number, to ensure that every input row gets predicted at least a few times. In this model, “ntree=50”, which means there are 50 trees to growth in this model. The second one is “mtry”.
+It represents the number of variables randomly sampled as candidates at each split, which is the input of the bagging algorithm. The default is square of number of parameters. In this model, “mtry=12” which give a better training error in the cross-validation process (not included in this report).
+
+According to the results, the training process is very fast and the misclassification rate is one of the smallest in all the models. This represent some great advantages of the model: good generalization ability and good training efficiency for large data set. Another reason why the prediction result is great is that our dataset avoids the disadvantages of random forest. There noise of features is small because all of them are pixels. And there are no categorical features.
+
+
+```{r code_model5_development, eval = TRUE}
+####################
+#RandomForest Model#
+####################
+
+
+
+randomForest_fitting <- function(dat,sta=1)
+
+                        
+{
+  model_name = "RandomForest"
+  mtry_num = 12
+  tree_number = 50
+  xtest = test.set[, -1]
+  ytest = test.set[, get("label")]
+  
+  start_time <- Sys.time()
+  mod.randomForest <- randomForest(label~., data=dat, ntree=tree_number, mtry=mtry_num)
+  
+  # End counting time
+  pred.randomForest <- predict(object = mod.randomForest, newdata = xtest, type = "response")
+  end_time <- Sys.time()
+ est.y<-pred.randomForest != ytest
+  
+
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C <- mean(est.y)
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"RandomForest"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+ifelse(sta==1,return(res),return(pred.randomForest))
+
+}
+```
+
+```{r load_model5}
+
+```
+
+### Model 6
+Generalized Boosted Regression Models
+ 
+The generalized boosted regression model (Xgboost) is an advance tree model where additional tree work directly on improving the accuracy of the fit to training set. Theoretically, it is a slow learner that allow a good number of trees to play a role in fitting the model. However, the package enables R to do the parallel computing, so the time for training the model in R should be acceptable.
+
+There are many hyperparameters in this model. First, “Eta” controls the learning rate: scale the contribution of each tree low eta value means model more robust to overfitting but slower to compute. Second, “gamma” minimum loss reduction required to make a further partition on a leaf node of the tree. the larger, the more conservative the algorithm will be. Third, “nrounds” represents max number of boosting iterations. Forth, “verbose=0” represents this model will not print the information about performance. fifth, “objective = ‘multi:softmax’” makes to output of the model to be categorical, rather than probability. Sixth, “evalmetric = "merror"” gives the right evaluation function for multiclass classifications.  “num_class= 11” set the number of classes of dependent variable.
+  
+According to the results, the training time is not very fast but acceptable. The parallel computing should get most credit for it. The advantage for this model is that if you carefully adjust all the parameters and find an optimal set of them, the prediction will be great, as shown in many Kaggle competitions. However, it is time consuming. So, in this model, we don’t use the tune() function to find the optimal. That’s why the misclassification rate is not as good as it expected to be.
+
+
+```{r code_model6_development, eval = TRUE}
+###############
+#Xgboost Model#
+###############
+
+xgb_fitting <- function(dat)
+{
+  test = test.set
+
+  # Obtain Names of the training dataset
+  dat_name<-NA
+  
+  label = as.matrix(dat[,1])
+  num_label = as.numeric(as.factor(label))
+  xgb.dat.lable = num_label
+  dtrain <- xgb.DMatrix(data = as.matrix(dat[,-1]), 
+                      label = as.matrix(xgb.dat.lable))
+
+  start_time <- Sys.time()
+  mod.xgb <- xgboost(data = dtrain, eta = 0.2,gamma = 2, nrounds = 20, 
+               verbose = 0, objective = "multi:softmax", evalmetric = "merror",
+               num_class= 11)
+  end_time <- Sys.time()
+
+  
+  testing <- data.frame(test)
+  xgb.test.lable <- as.numeric(testing[,1])
+  dtest <- xgb.DMatrix(data = as.matrix(testing[,-1]),
+                      label = as.matrix(xgb.test.lable))
+  pred.xgb <- predict(object = mod.xgb, newdata = dtest, type = "response")
+
+
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C <- mean(pred.xgb != xgb.test.lable)
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"Xgboost"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+
+```
+
+```{r load_model6}
+
+```
+
+### Model 7
+SVM
+
+We decided to include support vector machine, one of the most famous classification models, as one of our models. As the output shows, it behaves pretty good in the problem. It is a very good choice for small observations data set as we only use the support vectors to classify the observations. The high prediction accuracy using a small dataset is the biggest reason that we decided to include support vector machine in our ensembling model.
+
+The main idea of support vector machine is to find a number of support vector that can separate classes. The algorithm is yet another black box which is really hard to explain and pretty time-consuming comparing to other simple machine learning techniques. The parameter  tuning work for support vector machine is certainly easier than the work for neural networks. But different parameter will still lead to pretty different results. Unlike neural network, the rate of increase of prediction accuracy for support vector machine are pretty stable following the increase of training sample size. However, the rate of increase of the training time is much faster. This leads to an interesting result.
+
+Since the final point calculation involves three components, a highly accurate model also means longer computation time and requires larger sample size. As a result, the sample that obtains the least points among all support vector machine models is not necessarily the sample with the largest size and highest prediction accuracy. In this case, how to balance the tradeoff between training sample size and computation time could be a potential point to dig into further on. 
+
+
+```{r code_model7_development, eval = TRUE}
+###########
+#SVM Model#
+###########
+
+svm_fitting <- function(train,sta=1)
+{
+  cost = 19
+  model_name = "SVM"
+ 
+  xtest = train.set[, -1]
+  ytest = train.set[, get("label")]
+
+  start_time <- Sys.time()
+  mod.svm <- svm(formula = label~., data = train, type = "C-classification", cost = cost)
+  pred.svm <- predict(object = mod.svm, newdata = xtest)
+  
+  end_time <- Sys.time()
+
+A<-nrow(train)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C <- mean(pred.svm != ytest)
+samp_size<-nrow(train)
+dat_name<-NA
+modelname<-"SVM"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+ifelse(sta==1,return(res),return(pred.svm))
+}
+```
+
+```{r load_model7}
+
+```
+
+### Model 8
+NN
+
+Neural network is one of the non-parametric methods that is known for training huge and complicate models. It can solve both prediction and classification problems. In practice, imaging processing is one of the areas that uses neural network and deep learning massively. That’s one reason we choose neural network as one of our models.
+
+The algorithm of neural network is very complicated. In fact, the model itself can be considered a black box. Because of the complexity, one of the advantages of neural network include the high predictive accuracy. However, as our final output shows, neural network performs very poorly in this data. This mainly due to one of the disadvantages of Neural network, its sensitivity to training size. From our output, we can see that as the sample size increases, the prediction accuracy goes up. But even the largest train dataset couldn’t lead to a neural network model that can outperform other models, mainly because the sample size we are using to fit the model is not large enough. Therefore, the model results in a severe overfitting problem.
+
+Other characters of neural network also indicate that neural network is not a good choice for this problem. For example, tuning parameter is always a challenge for neural network. It’s more like an art work rather than mathematical calculation. From the output, we can see that one of the models has the testing error significantly lower than the others, we have to say that this result is more due to randomness. The capability of training huge and complicate models means that the algorithm within the model is not explainable. We are not able to obtain an easily interpretable result from this model. It also means that the model requires a lot computing power and therefore leads to lowest training speed. We are able to see this result in the output that neural network requires the longest time to train among all other models.
+
+We believe even though neural network is not the best model in this problem, it should be potentially the best model if we are able to train it using a bigger training sample and maybe design an even more complicate model. The way that the points is calculated is another dragger of evaluating neural network, since it is taking the training time into account without trying to scale all the model into the same level of computation complexity. That is, there’s no way that neural network can outperform some simple machine learning algorithms in terms of training time.
+
+
+```{r code_model8_development, eval = TRUE}
+#######################
+#Neural networks Model#
+#######################
+
+nn_fitting <- function(train)
+{
+  size = 15
+  maxit = 1000
+  decay = 0.0005
+  model_name = "Neural Networks"
+
+  xtest = test.set[, -1]
+  ytest = test.set[, get("label")]
+  start_time <- Sys.time()
+  mod.nnet <- nnet(formula = label ~., data = train, size = size, maxit = maxit, decay = decay)
+  pred.nnet <- predict(object = mod.nnet, newdata = xtest, type = "class")
+  end_time <- Sys.time()
+  
+A<-nrow(train)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C <- mean(pred.nnet != ytest)
+samp_size<-nrow(train)
+dat_name<-NA
+modelname<-"Neural networks"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+```
+
+```{r load_model8}
+
+```
+
+### Model 9
+KNN
+
+K-nearest neighbor is one of the models that we barely have to made any assumptions about the data distribution, so this model is able to fit any kind of wired data. This is the reason that we would like to fit this model to our data. However, the fact that there’s no assumption is both K-nearest neighbor’s advantage and disadvantage. It’s disadvantage in terms of its high sensitivity to outliers, and therefore leads to high variance and low predictability.  
+
+K-nearest neighbor has a pretty easy understand and explainable algorithm which is to find the k nearest data point of the observation. However, it’s not a computationally easy model. It takes many computing power and memory in calculating and storing the relative distances. 
+
+From the output, we can see that K-nearest neighbor has a moderate prediction accuracy and train time among all the models. All in all, K-nearest neighbor is one of our good models, but certainly not the best models.
+
+
+```{r code_model9_development, eval = TRUE}
+###########
+#KNN Model#
+###########
+
+
+knn_fitting <- function(train) 
+{
+  k = 4
+  model_name = "KNN"
+  xtest = test.set[, -1]
+  ytest = test.set[, get("label")]
+  dat_name <- names(train)
+  start_time <- Sys.time()
+  mod.knn <- knn(train = train[, -1], test = xtest, cl = train[, get("label")], k = k, prob = FALSE)
+  pred.knn <- mod.knn
+
+  end_time <- Sys.time()
+
+   
+A<-nrow(train)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C <- mean(pred.knn != ytest)
+samp_size<-nrow(train)
+dat_name<-NA
+modelname<-"KNN"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+```
+
+```{r load_model9}
+
+```
+
+### Model 10
+Ensemble model 
+
+We pick the best prediction model from each of our team members. The LDA with PCA, SVM, random forest are the three models to create the ensemble model. Our ensemble model is to use each our model to predict the test set and then use cbind.data.frame to combine each prediction. Our idea is that if the prediction of the three models has mode, we will use the mode as the final prediction to our test set. If not, we give each of the three models a weighted distribution such as 1/3, 1/3, 1/3. In other words, we can use sample function to random select one from each row of three predictions. Apply function is the perfect choice to perform such task. After setting up the functions to run the selection, we use apply with row option to find out the final prediction. Finally, we use the final prediction to compare with the test set. The results under 1000, 2000, and 3000 show a consistent prediction error that meets our expectation.  
+
+
+
+```{r code_model10_development, eval = TRUE}
+################
+#Ensemble Model#
+################
+
+
+ensemble.fun<-function(dat){
+  
+  get.mode <- function(m) {
+   uni <- unique(m)
+   uni[which.max(tabulate(match(m, uni)))]
+  }
+  
+  ll<-function(inpu){
+  ifelse(length(unique(inpu))==3,sample(inpu,1),get.mode(inpu))
+}
+
+
+  AA<-lda.pca(dat,sta=2)
+  BB<-randomForest_fitting(dat,sta=2)
+  CC<-svm_fitting(dat,sta=2)
+  
+  cbind.1<-cbind.data.frame(AA,BB,CC)
+  y.test<-test.set[,get("label")]
+  start_time <- Sys.time()
+  pre.res<-apply(cbind.1,1,ll)
+  end_time <- Sys.time()
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C<-mean(pre.res!=y.test)
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"Ensemble"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+  
+}
+```
+
+```{r load_model10}
+
+```
+
+## Scoreboard
+
+```{r scoreboard}
+#######################################
+#######################################
+
+generate.sample<-function(size0)
+{
+  
+n<-seq_len(train.set[,.N])
+dat<-replicate(3,sample(n,size0,replace = F))
+list.set<-list(train.set[dat[,1],],train.set[dat[,2],],train.set[dat[,3],])
+names(list.set)<-c(paste0("dat_",size0,"_1",seq=""),
+                      paste0("dat_",size0,"_2",seq=""),
+                      paste0("dat_",size0,"_3",seq=""))
+
+
+
+
+
+###########
+#LDA Model#
+###########
+
+ldatest<-function(dat){
+start_time <- Sys.time()
+lda.model<-lda(label~.,data=dat)
+
+#training.error<-mean((predict(lda.model)$class!=dat[,get('label')])*1)
+test.error<-mean((predict(lda.model,x.test)$class!=test.set[,get('label')])*1)
+end_time <- Sys.time()
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C<-test.error
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"LDA"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+
+
+####################
+#LDA with PCA Model#
+####################
+
+
+lda.pca<-function(dat,sta=1){
+  
+pca.train<-scale(dat[,-1],scale=FALSE)
+pca.test<-scale(test.set[,-1],scale=FALSE)
+
+#pca<-princomp(pca.train, cor = TRUE)
+#eg<-summary(pca)#take eigen as 36 #0.991058731 explain the data. 
+
+leading.pceigen<-svd(pca.train)$v[,1:36]
+pc.r.train<-pca.train %*%leading.pceigen
+pc.r.test<-pca.test%*%leading.pceigen
+
+start_time <- Sys.time()
+pca.lda.test<-lda(pc.r.train,dat[,get('label')])
+est.y<-predict(pca.lda.test,pc.r.test)$class
+end_time <- Sys.time()
+pca.test.error<-mean((est.y!=test.set[,get('label')])*1)
+
+
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C<-pca.test.error
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"LDA with PCA"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+
+ifelse(sta==1,return(res),return(est.y))
+
+}
+
+
+############################################
+# ridge with cross validation and PCA Model#
+############################################
+
+
+ridge.pca<-function(dat){
+  
+lambdas <- 10^seq(3, -2, by = -.1)
+
+pca.train<-scale(dat[,-1],scale=FALSE)
+pca.test<-scale(test.set[,-1],scale=FALSE)
+
+#pca<-princomp(pca.train, cor = TRUE)
+#eg<-summary(pca)#take eigen as 36 #0.991058731 explain the data. 
+
+leading.pceigen<-svd(pca.train)$v[,1:36]
+ridge.train_x<-pca.train %*%leading.pceigen
+ridge.test_x<-pca.test%*%leading.pceigen
+
+start_time <- Sys.time()
+ridge.test<-cv.glmnet(ridge.train_x,dat[,get("label")],family="multinomial",alpha=0,standardize=TRUE,lambda = lambdas)
+
+
+pca.test.error<-mean((predict(ridge.test,ridge.test_x,type = 'class')!=test.set[,get('label')])*1)
+end_time<-Sys.time()
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C<-pca.test.error
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"Ridge regression with PCA"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+
+
+################
+#Logistic Model#
+################
+
+
+logistic_fitting <- function(dat) 
+{
+   xtest = test.set[, -1]
+   ytest = test.set[, get("label")]
+   formula = "label ~."
+  # Obtain Names of the training dataset
+  start_time <- Sys.time()
+  mod.logistic <- multinom(formula = formula, data = dat)
+
+  pred.logistic <- predict(object = mod.logistic, newdata = xtest)
+  end_time <- Sys.time()
+  # Obtain: Sample size from the Name of the training dataset
+  
+  samp_size<-nrow(dat)
+  A <- samp_size / nrow(train.set)
+  B <- min(1, (as.numeric(end_time-start_time) / 60))
+  C<- mean(pred.logistic != ytest)
+  dat_name<-NA
+  modelname<-"Logistic"
+  pt<-0.25*A+0.25*B+0.5*C
+ res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+  colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+
+
+
+####################
+#RandomForest Model#
+####################
+
+
+
+randomForest_fitting <- function(dat,sta=1)
+
+                        
+{
+  model_name = "RandomForest"
+  mtry_num = 12
+  tree_number = 50
+  xtest = test.set[, -1]
+  ytest = test.set[, get("label")]
+  
+  start_time <- Sys.time()
+  mod.randomForest <- randomForest(label~., data=dat, ntree=tree_number, mtry=mtry_num)
+  
+  # End counting time
+  pred.randomForest <- predict(object = mod.randomForest, newdata = xtest, type = "response")
+  end_time <- Sys.time()
+ est.y<-pred.randomForest != ytest
+  
+
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C <- mean(est.y)
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"RandomForest"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+ifelse(sta==1,return(res),return(pred.randomForest))
+
+}
+
+
+###############
+#Xgboost Model#
+###############
+
+xgb_fitting <- function(dat)
+{
+  test = test.set
+
+  # Obtain Names of the training dataset
+  dat_name<-NA
+  
+  label = as.matrix(dat[,1])
+  num_label = as.numeric(as.factor(label))
+  xgb.dat.lable = num_label
+  dtrain <- xgb.DMatrix(data = as.matrix(dat[,-1]), 
+                      label = as.matrix(xgb.dat.lable))
+
+  start_time <- Sys.time()
+  mod.xgb <- xgboost(data = dtrain, eta = 0.2,gamma = 2, nrounds = 20, 
+               verbose = 0, objective = "multi:softmax", evalmetric = "merror",
+               num_class= 11)
+  end_time <- Sys.time()
+
+  
+  testing <- data.frame(test)
+  xgb.test.lable <- as.numeric(testing[,1])
+  dtest <- xgb.DMatrix(data = as.matrix(testing[,-1]),
+                      label = as.matrix(xgb.test.lable))
+  pred.xgb <- predict(object = mod.xgb, newdata = dtest, type = "response")
+
+
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C <- mean(pred.xgb != xgb.test.lable)
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"Xgboost"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+
+
+
+###########
+#SVM Model#
+###########
+
+svm_fitting <- function(train,sta=1)
+{
+  cost = 19
+  model_name = "SVM"
+ 
+  xtest = train.set[, -1]
+  ytest = train.set[, get("label")]
+
+  start_time <- Sys.time()
+  mod.svm <- svm(formula = label~., data = train, type = "C-classification", cost = cost)
+  pred.svm <- predict(object = mod.svm, newdata = xtest)
+  
+  end_time <- Sys.time()
+
+A<-nrow(train)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C <- mean(pred.svm != ytest)
+samp_size<-nrow(train)
+dat_name<-NA
+modelname<-"SVM"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+ifelse(sta==1,return(res),return(pred.svm))
+}
+
+
+
+#######################
+#Neural networks Model#
+#######################
+
+nn_fitting <- function(train)
+{
+  size = 15
+  maxit = 1000
+  decay = 0.0005
+  model_name = "Neural Networks"
+
+  xtest = test.set[, -1]
+  ytest = test.set[, get("label")]
+  start_time <- Sys.time()
+  mod.nnet <- nnet(formula = label ~., data = train, size = size, maxit = maxit, decay = decay)
+  pred.nnet <- predict(object = mod.nnet, newdata = xtest, type = "class")
+  end_time <- Sys.time()
+  
+A<-nrow(train)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C <- mean(pred.nnet != ytest)
+samp_size<-nrow(train)
+dat_name<-NA
+modelname<-"Neural networks"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+
+
+###########
+#KNN Model#
+###########
+
+
+knn_fitting <- function(train) 
+{
+  k = 4
+  model_name = "KNN"
+  xtest = test.set[, -1]
+  ytest = test.set[, get("label")]
+  dat_name <- names(train)
+  start_time <- Sys.time()
+  mod.knn <- knn(train = train[, -1], test = xtest, cl = train[, get("label")], k = k, prob = FALSE)
+  pred.knn <- mod.knn
+
+  end_time <- Sys.time()
+
+   
+A<-nrow(train)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C <- mean(pred.knn != ytest)
+samp_size<-nrow(train)
+dat_name<-NA
+modelname<-"KNN"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+}
+
+
+################
+#Ensemble Model#
+################
+
+
+ensemble.fun<-function(dat){
+  
+  get.mode <- function(m) {
+   uni <- unique(m)
+   uni[which.max(tabulate(match(m, uni)))]
+  }
+  
+  ll<-function(inpu){
+  ifelse(length(unique(inpu))==3,sample(inpu,1),get.mode(inpu))
+}
+
+
+  AA<-lda.pca(dat,sta=2)
+  BB<-randomForest_fitting(dat,sta=2)
+  CC<-svm_fitting(dat,sta=2)
+  
+  cbind.1<-cbind.data.frame(AA,BB,CC)
+  y.test<-test.set[,get("label")]
+  start_time <- Sys.time()
+  pre.res<-apply(cbind.1,1,ll)
+  end_time <- Sys.time()
+A<-nrow(dat)/nrow(train.set)
+B <- min(1, (as.numeric(end_time-start_time) / 60))
+C<-mean(pre.res!=y.test)
+samp_size<-nrow(dat)
+dat_name<-NA
+modelname<-"Ensemble"
+pt<-0.25*A+0.25*B+0.5*C
+res<-cbind.data.frame(modelname,samp_size,dat_name,A,B,C,pt)
+colnames(res)<-c("Model", "Sample Size", "Data", "A", "B", "C","Points")
+return(res)
+  
+}
+
+# create a mulifucntion for lapply
+multifun<-function(data){
+  rbind(ldatest(data),lda.pca(data),ridge.pca(data),
+        logistic_fitting(data),randomForest_fitting(data),xgb_fitting(data),
+        svm_fitting(data),nn_fitting(data),knn_fitting(data),ensemble.fun(data))
+}
+
+
+#combine each output list
+dataframeM<-function(dat){
+  rbindlistt<-NULL
+ for(i in 1:3)
+ {
+   dat[[i]]$Data<-paste0("dat_",size0,"_",i) 
+   rbindlistt<-rbind(rbindlistt,dat[[i]])
+ }
+  return(rbindlistt)
+}
+
+aa<-lapply(list.set,multifun)
+dataoutput<-dataframeM(aa)
+
+return(dataoutput)
+
+}
+
+#generate a outpout function with three diffrent sample size
+output.function<-function(v1,v2,v3){
+ dat<-rbind(generate.sample(v1),
+        generate.sample(v2),
+        generate.sample(v3))
+ 
+ dat<-dat[order(dat$Model),]
+ row.names(dat)<-NULL
+ round.fun<-function(num){
+   signif(num,4)
+ }
+dat[,4:7]<-apply(dat[,4:7],2,round.fun)
+dat<-datatable(dat)
+return(dat)
+
+}
+
+
+output.function(1000,2000,3000)
+
+```
+
+## Discussion
+
+LDA models generally perform very well in our sample selection. However, the problem with LDA is that the prediction error will maintain almost at same level when the sample size surpasses a certain number. LDA with cross validation may solve the problem, but it also increases the running time. Ridge regression itself has really bad prediction. The solution is very simple, applying the cross validation. QDA and lasso regression were considered as the model candidates. After testing them with training set, the problem with QDA is the multiple correlation, which can be theoretically solved by removing the correlated terms. In practical, it may not be possible. Lasso regression has the problem with slower running time than ridge regression and similar prediction error. As a result, Lasso regression and QDA are out of the options. 
+
+As one of the poorly performed models, neural network was certainly not considered to be included into our final ensembling model. However, it’s worth to mention that nural network is widely used in practice. Therefore, we should expect neural network will do a much better job in terms of predicting accuracy. In our model, we have to compromise sample size to get better runing time. Besides, neutral networks is a very time consuming model so that we can't also apply cross validation to it. If we weighted much more on test error, we blieve that neural network will perform much better. Comparing to neural network, the support vector machine model is one of the three models that is included in the final ensembling model. Its superiority in fitting smaller dataset leads to the high prediction accuracy. However, the performance of support vector machine is also been dragged due to its computation inefficiency. Therefore, there’s a tradeoff between the prediction accuracy and the computation time.
+
+When we focus on the accuracy, the multinomial logistic model should not be used. However, this kind of regression model is irreplaceable for getting inference from features. For some marketing or business projects, when we need to create insights from data and explain results to and influences to the stakeholders, it is especially useful.The random forest and generalized boosted regression model (Xgboost) are all suitable for the goal to optimize accuracy. The difference of them is not shown in this project, because the features are all the pixels so that there is no feature engineering process. The Xgboost will be more robust for features with many noises. The performance of random forest will not be as good as it because it based on the tree model which is sensitive to the noise. This result is shown by most of the Kaggle competitions.
+
+In this project, we have to compromise sample size to get better running time and appropriate accuracy. As the result, some models such as neutral networks don’t perform ideally. Still, we include the neural networks in our model to demonstrate the point that not all models fitted very well under certain constrained parameters. In conclusion, we have encountered problems such as large prediction error, bad fitted model, and a choice between running time and sample size. We partially solved them by applying cross validation and dimensional reduction. We have learned that we need to make trade off to select our models and parameters in order to optimize our outputs. 
+
+
+
+
+## References
+
+https://datascienceplus.com/how-to-perform-logistic-regression-lda-qda-in-r/
+
+https://codingstartups.com/practical-machine-learning-ridge-regression-vs-lasso/
+
+https://towardsdatascience.com/ridge-and-lasso-regression-a-complete-guide-with-python-scikit-learn-e20e34bcbf0b
+
+https://www.rdocumentation.org/packages/glmnet/versions/2.0-16/topics/glmnet
+https://en.wikipedia.org/wiki/Lasso_(statistics)
+
+https://www.rdocumentation.org/packages/randomForest/versions/4.6-14/topics/randomForest
+https://en.wikipedia.org/wiki/Random_forest
+
+https://www.rdocumentation.org/packages/xgboost/versions/0.81.0.1/topics/xgb.train
+https://en.wikipedia.org/wiki/Gradient_boosting
+
+
+
+
+
