@@ -1,4 +1,4 @@
-# Midterm_project_Applied-Data-Science-GR5243
+# Classification-of-clothes-and-evaluation-of-models
 
 Please be aware that there materials can just be used for personal study. DO NOT use them for profit.
 
